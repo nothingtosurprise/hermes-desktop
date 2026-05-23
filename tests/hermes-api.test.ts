@@ -189,4 +189,51 @@ describe("sendMessageViaApi forwards resumeSessionId", () => {
 
     expect(parsed).not.toHaveProperty("session_id");
   });
+
+  it("sends the X-Hermes-Session-Id request header when resuming", async () => {
+    const testSessionId = "session-abc-123";
+
+    await sendMessage(
+      "hello",
+      {
+        onChunk: () => {},
+        onDone: () => {},
+        onError: () => {},
+      },
+      "default",
+      testSessionId,
+    );
+
+    const chatRequest = capturedRequests.find((r) =>
+      r.url.includes("/v1/chat/completions"),
+    );
+    expect(chatRequest).toBeDefined();
+    const headers = chatRequest!.options.headers as Record<string, string>;
+
+    // The gateway resumes an existing session from this request header;
+    // the session_id body field is ignored. Without it every request
+    // forks a new server-side session (issue #226).
+    expect(headers["X-Hermes-Session-Id"]).toBe(testSessionId);
+  });
+
+  it("omits the X-Hermes-Session-Id header for a fresh session", async () => {
+    await sendMessage(
+      "hello",
+      {
+        onChunk: () => {},
+        onDone: () => {},
+        onError: () => {},
+      },
+      "default",
+      undefined,
+    );
+
+    const chatRequest = capturedRequests.find((r) =>
+      r.url.includes("/v1/chat/completions"),
+    );
+    expect(chatRequest).toBeDefined();
+    const headers = chatRequest!.options.headers as Record<string, string>;
+
+    expect(headers).not.toHaveProperty("X-Hermes-Session-Id");
+  });
 });
