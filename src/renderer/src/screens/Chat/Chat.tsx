@@ -120,6 +120,41 @@ function Chat({
     modelConfig.currentBaseUrl,
   ]);
 
+  // Authoritative context-window size for the active model, resolved from the
+  // provider's /models catalogue (issue #597). Null until/unless the provider
+  // advertises it — the gauge then falls back to the static heuristic.
+  const [realContextWindow, setRealContextWindow] = useState<number | null>(
+    null,
+  );
+  useEffect(() => {
+    let cancelled = false;
+    setRealContextWindow(null);
+    if (!modelConfig.currentModel) return;
+    window.hermesAPI
+      .getModelContextWindow(
+        modelConfig.currentProvider,
+        modelConfig.currentModel,
+        modelConfig.currentBaseUrl,
+        profile,
+      )
+      .then((w) => {
+        if (!cancelled && typeof w === "number" && w > 0) {
+          setRealContextWindow(w);
+        }
+      })
+      .catch(() => {
+        /* fall back to heuristic */
+      });
+    return (): void => {
+      cancelled = true;
+    };
+  }, [
+    profile,
+    modelConfig.currentModel,
+    modelConfig.currentProvider,
+    modelConfig.currentBaseUrl,
+  ]);
+
   useChatIPC({
     setMessages,
     setHermesSessionId,
@@ -357,7 +392,8 @@ function Chat({
   const contextUsage: ContextUsage | null = usage?.contextTokens
     ? {
         used: usage.contextTokens,
-        window: contextWindowForModel(modelConfig.currentModel),
+        window:
+          realContextWindow ?? contextWindowForModel(modelConfig.currentModel),
         cacheReadTokens: usage.cacheReadTokens,
         cacheWriteTokens: usage.cacheWriteTokens,
       }
