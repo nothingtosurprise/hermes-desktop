@@ -5,6 +5,7 @@ export {
   Building,
   ChevronDown,
   ChevronRight,
+  Circle,
   Clock,
   Compass,
   Copy,

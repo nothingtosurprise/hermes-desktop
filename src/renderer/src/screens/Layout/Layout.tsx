@@ -8,6 +8,7 @@ import Sessions from "../Sessions/Sessions";
 import Agents from "../Agents/Agents";
 import Discover from "../Discover/Discover";
 import ProfileSwitcher from "./ProfileSwitcher";
+import SidebarRecentSessions from "./SidebarRecentSessions";
 import Settings from "../Settings/Settings";
 import Skills from "../Skills/Skills";
 import Memory from "../Memory/Memory";
@@ -37,6 +38,8 @@ import {
   Download,
   PanelLeftClose,
   PanelLeftOpen,
+  ChevronDown,
+  ChevronRight,
 } from "../../assets/icons";
 import type { LucideIcon } from "lucide-react";
 import { useI18n } from "../../components/useI18n";
@@ -77,6 +80,7 @@ const NAV_ITEMS: { view: View; icon: LucideIcon; labelKey: string }[] = [
 ];
 
 const SIDEBAR_COLLAPSED_KEY = "hermes.sidebar.collapsed";
+const SESSIONS_EXPANDED_KEY = "hermes.sidebar.sessionsExpanded";
 
 interface LayoutProps {
   verifyWarning?: boolean;
@@ -99,6 +103,15 @@ function Layout({
       return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
     } catch {
       return false;
+    }
+  });
+  // Sessions nav section expanded → shows the last few chats inline
+  // (ChatGPT-style). Defaults to expanded; persisted across launches.
+  const [sessionsExpanded, setSessionsExpanded] = useState(() => {
+    try {
+      return localStorage.getItem(SESSIONS_EXPANDED_KEY) !== "false";
+    } catch {
+      return true;
     }
   });
   // Tabs lazy-mount on first visit, then stay mounted (display:none toggle).
@@ -278,6 +291,18 @@ function Layout({
     });
   }, []);
 
+  const toggleSessionsExpanded = useCallback(() => {
+    setSessionsExpanded((expanded) => {
+      const next = !expanded;
+      try {
+        localStorage.setItem(SESSIONS_EXPANDED_KEY, String(next));
+      } catch {
+        /* ignore persistence failures */
+      }
+      return next;
+    });
+  }, []);
+
   const sidebarToggleLabel = sidebarCollapsed
     ? t("navigation.expandSidebar")
     : t("navigation.collapseSidebar");
@@ -312,18 +337,61 @@ function Layout({
         </div>
 
         <nav className="sidebar-nav">
-          {NAV_ITEMS.map(({ view: v, icon: Icon, labelKey }) => (
-            <button
-              key={v}
-              className={`sidebar-nav-item ${view === v ? "active" : ""}`}
-              onClick={() => goTo(v)}
-              title={t(labelKey)}
-              aria-label={t(labelKey)}
-            >
-              <Icon size={16} />
-              <span className="sidebar-nav-label">{t(labelKey)}</span>
-            </button>
-          ))}
+          {NAV_ITEMS.map(({ view: v, icon: Icon, labelKey }) => {
+            if (v === "sessions") {
+              const recentToggleLabel = sessionsExpanded
+                ? t("navigation.hideRecentSessions")
+                : t("navigation.showRecentSessions");
+              return (
+                <div key={v} className="sidebar-nav-sessions">
+                  <div className="sidebar-nav-row">
+                    <button
+                      className={`sidebar-nav-item ${view === v ? "active" : ""}`}
+                      onClick={() => goTo(v)}
+                      title={t(labelKey)}
+                      aria-label={t(labelKey)}
+                    >
+                      <Icon size={16} />
+                      <span className="sidebar-nav-label">{t(labelKey)}</span>
+                    </button>
+                    {!sidebarCollapsed && (
+                      <button
+                        className="sidebar-nav-chevron"
+                        type="button"
+                        onClick={toggleSessionsExpanded}
+                        title={recentToggleLabel}
+                        aria-label={recentToggleLabel}
+                        aria-expanded={sessionsExpanded}
+                      >
+                        {sessionsExpanded ? (
+                          <ChevronDown size={14} />
+                        ) : (
+                          <ChevronRight size={14} />
+                        )}
+                      </button>
+                    )}
+                  </div>
+                  <SidebarRecentSessions
+                    open={sessionsExpanded && !sidebarCollapsed}
+                    currentSessionId={currentSessionId}
+                    onSelect={handleResumeSession}
+                  />
+                </div>
+              );
+            }
+            return (
+              <button
+                key={v}
+                className={`sidebar-nav-item ${view === v ? "active" : ""}`}
+                onClick={() => goTo(v)}
+                title={t(labelKey)}
+                aria-label={t(labelKey)}
+              >
+                <Icon size={16} />
+                <span className="sidebar-nav-label">{t(labelKey)}</span>
+              </button>
+            );
+          })}
         </nav>
 
         <div className="sidebar-footer">

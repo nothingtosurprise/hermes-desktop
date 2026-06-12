@@ -62,7 +62,8 @@ function Chat({
   // held in memory; reset on session switch / new chat below.
   const [contextFolder, setContextFolder] = useState<string | null>(null);
   // Whether the worktree panel is visible (only applies when contextFolder is set)
-  const [worktreeVisible, setWorktreeVisible] = useState<boolean>(true);
+  // Default false so the panel doesn't open automatically and interfere with scrolling
+  const [worktreeVisible, setWorktreeVisible] = useState<boolean>(false);
   const dragCounter = useRef(0);
   const chatInputRef = useRef<ChatInputHandle>(null);
   const queueRef = useRef<QueuedMessage[]>([]);

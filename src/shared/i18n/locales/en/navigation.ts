@@ -16,4 +16,6 @@ export default {
   settings: "Settings",
   collapseSidebar: "Collapse sidebar",
   expandSidebar: "Expand sidebar",
+  showRecentSessions: "Show recent sessions",
+  hideRecentSessions: "Hide recent sessions",
 } as const;
