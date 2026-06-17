@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import toast from "react-hot-toast";
 import { Zap } from "lucide-react";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatEmptyState } from "./ChatEmptyState";
@@ -386,6 +387,17 @@ function Chat({
     addAgentMessage,
   });
 
+  // Fired once per connection when the dashboard WebSocket transport can't
+  // connect (e.g. SSH tunnel → `hermes gateway`, which has no `/api/ws`, issue
+  // #667) and we fall back to legacy chat. A fixed toast id dedupes.
+  const handleDashboardUnavailable = useCallback(() => {
+    toast(t("chat.dashboardUnavailableFallback"), {
+      id: "dashboard-unavailable-fallback",
+      icon: "ℹ️",
+      duration: 8000,
+    });
+  }, [t]);
+
   const dashboardTransport = useDashboardChatTransport({
     activeTurnRef,
     contextFolder,
@@ -403,6 +415,7 @@ function Chat({
     setMessages,
     setToolProgress,
     setUsage,
+    onDashboardUnavailable: handleDashboardUnavailable,
   });
 
   const actions = useChatActions({

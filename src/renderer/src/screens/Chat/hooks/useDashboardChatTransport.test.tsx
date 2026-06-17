@@ -63,7 +63,17 @@ const activeRecoveryTurn: ActiveTurn = {
   userId: "u-recovery",
 };
 
-function Harness({ api }: { api: HarnessApi }): null {
+function Harness({
+  api,
+  fallbackOnUnavailable = false,
+  initialConnectionMode = "local",
+  onDashboardUnavailable,
+}: {
+  api: HarnessApi;
+  fallbackOnUnavailable?: boolean;
+  initialConnectionMode?: "local" | "remote" | "ssh";
+  onDashboardUnavailable?: (reason: string) => void;
+}): null {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "u-bad",
@@ -76,14 +86,14 @@ function Harness({ api }: { api: HarnessApi }): null {
   const [provider, setProvider] = useState("bad-provider");
   const [connectionMode, setConnectionMode] = useState<
     "local" | "remote" | "ssh"
-  >("local");
+  >(initialConnectionMode);
   const activeTurnRef = useRef<ActiveTurn | null>({ ...activeBadTurn });
   const transport = useDashboardChatTransport({
     activeTurnRef,
     contextFolder: null,
     connectionMode,
     enabled: true,
-    fallbackOnUnavailable: false,
+    fallbackOnUnavailable,
     hermesSessionId: null,
     messages,
     model,
@@ -94,6 +104,7 @@ function Harness({ api }: { api: HarnessApi }): null {
     setMessages,
     setToolProgress: vi.fn(),
     setUsage: vi.fn(),
+    onDashboardUnavailable,
   });
 
   useEffect(() => {
@@ -341,5 +352,98 @@ describe("useDashboardChatTransport recovery", () => {
     expect(requests.map((request) => request.method)).toContain(
       "prompt.submit",
     );
+  });
+});
+
+describe("useDashboardChatTransport unavailable fallback (issue #667)", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function mockStartDashboard(): ReturnType<typeof vi.fn> {
+    const startDashboard = vi.fn(async () => ({
+      running: false,
+      error: "Hermes dashboard chat WebSocket is unavailable (404)",
+    }));
+    Object.defineProperty(window, "hermesAPI", {
+      configurable: true,
+      value: {
+        recordSessionContinuation: vi.fn(async () => true),
+        recordSessionLocalError: vi.fn(async () => true),
+        startDashboard,
+      },
+    });
+    return startDashboard;
+  }
+
+  it("latches unavailable on SSH and fails fast on later sends, notifying once", async () => {
+    const startDashboard = mockStartDashboard();
+    const onUnavailable = vi.fn();
+    const api: HarnessApi = {};
+    render(
+      <Harness
+        api={api}
+        initialConnectionMode="ssh"
+        fallbackOnUnavailable
+        onDashboardUnavailable={onUnavailable}
+      />,
+    );
+
+    let first: boolean | undefined;
+    await act(async () => {
+      first = await api.send?.("hello");
+    });
+    // Dashboard unavailable → caller falls back to legacy (returns false).
+    expect(first).toBe(false);
+    expect(startDashboard).toHaveBeenCalledTimes(1);
+    expect(onUnavailable).toHaveBeenCalledTimes(1);
+
+    let second: boolean | undefined;
+    await act(async () => {
+      second = await api.send?.("again");
+    });
+    expect(second).toBe(false);
+    // Fast path: no second status/probe round-trip, no duplicate notice.
+    expect(startDashboard).toHaveBeenCalledTimes(1);
+    expect(onUnavailable).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-probes after the connection changes", async () => {
+    const startDashboard = mockStartDashboard();
+    const api: HarnessApi = {};
+    render(
+      <Harness api={api} initialConnectionMode="ssh" fallbackOnUnavailable />,
+    );
+
+    await act(async () => {
+      await api.send?.("hello");
+    });
+    expect(startDashboard).toHaveBeenCalledTimes(1);
+
+    // Switching connection clears the sticky flag → the dashboard is retried.
+    await act(async () => {
+      api.setConnectionMode?.("remote");
+    });
+    await act(async () => {
+      await api.send?.("after change");
+    });
+    expect(startDashboard).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps retrying on local (does not latch)", async () => {
+    const startDashboard = mockStartDashboard();
+    const api: HarnessApi = {};
+    render(
+      <Harness api={api} initialConnectionMode="local" fallbackOnUnavailable />,
+    );
+
+    await act(async () => {
+      await api.send?.("hello");
+    });
+    await act(async () => {
+      await api.send?.("again");
+    });
+    // Local dashboard may still be spawning, so each send re-checks.
+    expect(startDashboard).toHaveBeenCalledTimes(2);
   });
 });

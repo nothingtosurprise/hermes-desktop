@@ -68,6 +68,8 @@ export default {
   contextCache: "Cache: {{pct}}% hit ({{read}} read / {{write}} write)",
   removeAttachment: "Remove attachment",
   dropToAttach: "Drop files to attach",
+  dashboardUnavailableFallback:
+    "Dashboard chat isn't available on this connection — using basic chat. Profile switching and session history are limited. (See issue #667.)",
   attachUnsupported: "{{name}}: file type not supported",
   attachImageTooLarge: "{{name}}: image too large (max 50 MB)",
   attachImageUncompressible:

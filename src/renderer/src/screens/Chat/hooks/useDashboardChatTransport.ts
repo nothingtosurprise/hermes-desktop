@@ -93,6 +93,10 @@ interface UseDashboardChatTransportArgs {
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
   setToolProgress: (tool: string | null) => void;
   setUsage: React.Dispatch<React.SetStateAction<UsageState | null>>;
+  /** Called once per connection when the dashboard transport is found to be
+   *  unavailable on a remote/SSH connection and the renderer is falling back to
+   *  the legacy HTTP transport. Lets the UI surface a one-time notice. */
+  onDashboardUnavailable?: (reason: string) => void;
 }
 
 interface UseDashboardChatTransportResult {
@@ -770,10 +774,18 @@ export function useDashboardChatTransport({
   setMessages,
   setToolProgress,
   setUsage,
+  onDashboardUnavailable,
 }: UseDashboardChatTransportArgs): UseDashboardChatTransportResult {
   const clientRef = useRef<DashboardGatewayClient | null>(null);
   const connectingRef = useRef<Promise<DashboardGatewayClient> | null>(null);
   const clientGenerationRef = useRef(0);
+  // Sticky "dashboard transport can't connect on this remote/SSH connection"
+  // flag. The dashboard WebSocket (`/api/ws`) never connects against a tunneled
+  // `hermes gateway` (issue #667), so once we've learned it's unavailable we
+  // fail `ensureClient` fast on every later message instead of re-running the
+  // multi-second status+probe — letting the caller fall back to legacy HTTP
+  // immediately. Reset on connection change (see the effect below).
+  const dashboardUnavailableRef = useRef(false);
   const runtimeSessionIdRef = useRef<string | null>(null);
   const storedSessionIdRef = useRef<string | null>(hermesSessionId);
   const messagesRef = useRef<ChatMessage[]>(messages);
@@ -807,6 +819,7 @@ export function useDashboardChatTransport({
 
   useEffect(() => {
     clientGenerationRef.current += 1;
+    dashboardUnavailableRef.current = false;
     clientRef.current?.close();
     clientRef.current = null;
     connectingRef.current = null;
@@ -918,6 +931,11 @@ export function useDashboardChatTransport({
   const ensureClient = useCallback(async (): Promise<DashboardGatewayClient> => {
     const existing = clientRef.current;
     if (existing?.connected) return existing;
+    // Already known unavailable on this remote/SSH connection — fail fast so the
+    // caller falls back to legacy without re-running the slow status+probe.
+    if (dashboardUnavailableRef.current) {
+      throw new Error("Hermes dashboard transport is unavailable");
+    }
     if (connectingRef.current) return connectingRef.current;
 
     const generation = clientGenerationRef.current;
@@ -927,6 +945,15 @@ export function useDashboardChatTransport({
         throw new Error("Hermes dashboard connection was superseded");
       }
       if (!status.running || !status.connection?.wsUrl) {
+        // On a remote/SSH connection this is sticky (the tunneled gateway has
+        // no `/api/ws`), so latch it and notify once. Local stays retryable —
+        // its dashboard may still be spawning.
+        if (connectionMode !== "local" && !dashboardUnavailableRef.current) {
+          dashboardUnavailableRef.current = true;
+          onDashboardUnavailable?.(
+            status.error || "Hermes dashboard transport is unavailable",
+          );
+        }
         throw new Error(
           status.error || "Hermes dashboard transport is unavailable",
         );
@@ -957,7 +984,7 @@ export function useDashboardChatTransport({
         connectingRef.current = null;
       }
     }
-  }, [handleGatewayEvent, profile]);
+  }, [handleGatewayEvent, profile, connectionMode, onDashboardUnavailable]);
 
   const ensureRuntimeSession = useCallback(
     async (
