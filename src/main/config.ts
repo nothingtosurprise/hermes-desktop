@@ -100,9 +100,7 @@ export function getConnectionConfig(): ConnectionConfig {
     mode: (data.connectionMode as "local" | "remote" | "ssh") || "local",
     remoteUrl: (data.remoteUrl as string) || "",
     apiKey: (data.remoteApiKey as string) || "",
-    remoteChatTransport: normalizeRemoteChatTransport(
-      data.remoteChatTransport,
-    ),
+    remoteChatTransport: normalizeRemoteChatTransport(data.remoteChatTransport),
     sshChatTransport: normalizeRemoteChatTransport(data.sshChatTransport),
     ssh: {
       host: (ssh.host as string) || "",
@@ -140,9 +138,7 @@ export function setConnectionConfig(config: ConnectionConfig): void {
   data.remoteChatTransport = normalizeRemoteChatTransport(
     config.remoteChatTransport,
   );
-  data.sshChatTransport = normalizeRemoteChatTransport(
-    config.sshChatTransport,
-  );
+  data.sshChatTransport = normalizeRemoteChatTransport(config.sshChatTransport);
   if (config.mode === "ssh") {
     data.sshConfig = config.ssh;
   }
@@ -725,6 +721,27 @@ export function getModelConfig(profile?: string): {
 }
 
 /**
+ * Read the active model's manual context-window override from config.yaml's
+ * `model.context_length`, paired with the active `model.default` so callers can
+ * confirm the override applies to the model they're asking about. Returns the
+ * parsed positive token count, or null when unset/invalid. Drives the context
+ * gauge ahead of provider `/models` detection (issue: 32k-instead-of-64k).
+ */
+export function getModelContextLengthOverride(
+  profile?: string,
+): { model: string; contextLength: number } | null {
+  const { configFile } = profilePaths(profile);
+  if (!existsSync(configFile)) return null;
+  const content = readFileSync(configFile, "utf-8");
+  const { children } = readTopLevelBlock(content, "model");
+  const raw = children.get("context_length")?.value;
+  if (!raw) return null;
+  const n = parseInt(raw.trim(), 10);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return { model: children.get("default")?.value || "", contextLength: n };
+}
+
+/**
  * Mirror of the runtime key-resolution fallback for OpenAI-compatible /
  * custom endpoints (see `sendMessageViaCli` in hermes.ts): the gateway tries
  * the URL-specific key, then `CUSTOM_API_KEY`, then `OPENAI_API_KEY`. Returns
@@ -795,7 +812,13 @@ export function upsertBlockChild(
   blockName: string,
   key: string,
   value: string,
+  // Whether to wrap the value in double quotes. Default true (every existing
+  // caller writes string scalars). Pass false for numeric/boolean scalars
+  // like `model.context_length`, which must parse as a YAML number — not a
+  // quoted string — for strict consumers.
+  quote = true,
 ): string {
+  const rendered = quote ? `"${value}"` : value;
   const { children, blockBodyStart, childIndent } = readTopLevelBlock(
     content,
     blockName,
@@ -805,13 +828,13 @@ export function upsertBlockChild(
   if (existing) {
     return (
       content.slice(0, existing.valueStart) +
-      `"${value}"` +
+      rendered +
       content.slice(existing.valueEnd)
     );
   }
 
   if (blockBodyStart !== null) {
-    const insertion = `${childIndent}${key}: "${value}"\n`;
+    const insertion = `${childIndent}${key}: ${rendered}\n`;
     return (
       content.slice(0, blockBodyStart) +
       insertion +
@@ -824,7 +847,30 @@ export function upsertBlockChild(
   // bootstrapping a fresh config.yaml) skip the separator so we don't
   // leave a stray leading blank line.
   const sep = content === "" || content.endsWith("\n") ? "" : "\n";
-  return `${content}${sep}${blockName}:\n  ${key}: "${value}"\n`;
+  return `${content}${sep}${blockName}:\n  ${key}: ${rendered}\n`;
+}
+
+/**
+ * Remove a direct child `key` from a top-level YAML block, if present. Returns
+ * the content unchanged when the block or key is absent. Counterpart to
+ * `upsertBlockChild` — used to clear an override (e.g. `model.context_length`)
+ * so auto-detection resumes rather than leaving a stale value behind.
+ */
+export function removeBlockChild(
+  content: string,
+  blockName: string,
+  key: string,
+): string {
+  const { children } = readTopLevelBlock(content, blockName);
+  const existing = children.get(key);
+  if (!existing) return content;
+  // Derive the full `  key: value` line bounds from the value offsets the
+  // reader records, then drop the whole line (including its trailing newline)
+  // so the rest of the block stays intact.
+  const lineStart = content.lastIndexOf("\n", existing.valueStart - 1) + 1;
+  const nl = content.indexOf("\n", existing.valueEnd);
+  const lineEnd = nl === -1 ? content.length : nl + 1;
+  return content.slice(0, lineStart) + content.slice(lineEnd);
 }
 
 /**
@@ -885,11 +931,17 @@ function findModelBlockBody(
   return { start, end };
 }
 
+// @lat: [[model-context#Model context window#Storage and propagation]]
 export function setModelConfig(
   provider: string,
   model: string,
   baseUrl: string,
   profile?: string,
+  // Optional context-window override (tokens) mirrored into
+  // `model.context_length`. `undefined` leaves the key untouched (back-compat
+  // for callers that don't manage it); a positive number sets it; `null` or a
+  // non-positive number removes it (auto-detection / heuristic resumes).
+  contextLength?: number | null,
 ): void {
   invalidateCache(`mc:${profile || "default"}`);
   const { configFile } = profilePaths(profile);
@@ -998,6 +1050,24 @@ export function setModelConfig(
   const streamingRegex = /^(\s*streaming:\s*)(\S+)/m;
   if (streamingRegex.test(content)) {
     content = content.replace(streamingRegex, "$1true");
+  }
+
+  // Mirror the per-model context-window override into `model.context_length`,
+  // which both the desktop context gauge and the agent's auto-compaction
+  // threshold read. Skip entirely when `undefined` so existing callers that
+  // don't track it leave any user-set value alone.
+  if (contextLength !== undefined) {
+    if (typeof contextLength === "number" && contextLength > 0) {
+      content = upsertBlockChild(
+        content,
+        "model",
+        "context_length",
+        String(Math.floor(contextLength)),
+        false, // numeric scalar — write unquoted so YAML parses it as a number
+      );
+    } else {
+      content = removeBlockChild(content, "model", "context_length");
+    }
   }
 
   safeWriteFile(configFile, content);
