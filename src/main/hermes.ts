@@ -45,6 +45,8 @@ import {
   getActiveProfileNameSync,
 } from "./utils";
 import { getProfilePort } from "./gateway-ports";
+import { promptSudoPassword, promptSecretValue } from "./gatewayPrompt";
+import { getSecret } from "./secrets";
 import { readModels } from "./models";
 import { providerListSafe } from "./secrets";
 import { HIDDEN_SUBPROCESS_OPTIONS } from "./process-options";
@@ -1984,14 +1986,63 @@ async function sendMessageViaTuiGateway(
     }
 
     if (event.type === "sudo.request" || event.type === "secret.request") {
-      // Out of scope for the inline-clarify change: a desktop sudo/secret prompt
-      // carries its own security-review surface and is a deliberate follow-up.
-      void client
-        .request("session.interrupt", { session_id: activeSessionId }, 5_000)
-        .catch(() => undefined);
-      finish(
-        `Hermes requested ${event.type.replace(".request", "")} input, but Hermes One does not yet expose that gateway dialog.`,
-      );
+      const isSudo = event.type === "sudo.request";
+      const requestId =
+        typeof event.payload?.request_id === "string"
+          ? event.payload.request_id
+          : "";
+      if (!requestId) {
+        void client
+          .request("session.interrupt", { session_id: activeSessionId }, 5_000)
+          .catch(() => undefined);
+        finish(
+          `Hermes requested ${event.type.replace(".request", "")} input, but the gateway provided no request_id to answer.`,
+        );
+        return;
+      }
+      // A sudo password / secret value is sensitive — collect it in the
+      // hardened askpass modal (never the chat transcript) and forward it to
+      // the gateway. Cancel maps to "" (a safe skip the gateway handles).
+      //
+      // For secret.request: try the configured security provider first. If the
+      // vault already holds the key, answer silently without prompting the user.
+      const payload = event.payload as
+        | { prompt?: string; env_var?: string }
+        | undefined;
+      const envVar = String(payload?.env_var ?? "");
+
+      // Vault-first resolution for secret.request: attempt a provider lookup
+      // before falling back to the interactive modal. sudo.request always needs
+      // an interactive password — no vault lookup applies.
+      const vaultValue =
+        !isSudo && envVar ? getSecret(envVar, profile) : null;
+
+      const collect: Promise<string> =
+        vaultValue != null
+          ? Promise.resolve(vaultValue)
+          : isSudo
+            ? promptSudoPassword()
+            : promptSecretValue(envVar, String(payload?.prompt ?? ""));
+
+      void collect
+        .then((answer) => {
+          if (finished) return; // turn was cancelled while modal was open
+          const method = isSudo ? "sudo.respond" : "secret.respond";
+          const params = isSudo
+            ? { request_id: requestId, password: answer }
+            : { request_id: requestId, value: answer };
+          return client.request(method, params, 300_000);
+        })
+        .catch((error) => {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          if (!hasGatewayOutput) {
+            startApiFallback(message);
+            return;
+          }
+          finish(message);
+        });
+      return;
     }
   });
 

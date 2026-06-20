@@ -20,6 +20,7 @@ import {
   isAllowedWebviewUrl,
 } from "../security";
 import { registerIpcHandlers } from "../ipc/register";
+import { setGatewayPromptParent } from "../gatewayPrompt";
 import { showChatContextMenu } from "./context-menu";
 import { buildMenu } from "./menu";
 import { setupUpdater } from "./updater";
@@ -159,6 +160,10 @@ function createWindow(): void {
   });
 
   mainWindow.on("ready-to-show", () => mainWindow?.show());
+
+  // Let mid-turn gateway sudo/secret prompts parent their modal to this window.
+  setGatewayPromptParent(() => mainWindow);
+
   mainWindow.webContents.on("render-process-gone", (_event, details) => {
     console.error("[CRASH] Renderer process gone:", details.reason, details.exitCode);
   });
