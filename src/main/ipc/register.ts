@@ -10,7 +10,7 @@ import { stageAttachment, clearStagedAttachments } from "../attachment-staging";
 import { persistPromptImageAttachments } from "../session-attachment-store";
 import { discoverProviderModels, getModelContextWindow } from "../model-discovery";
 import { persistSessionContinuation, persistSessionLocalError } from "../session-continuation-store";
-import { getSessionContextFolder, setSessionContextFolder } from "../session-context-folder-store";
+import { getSessionContextFolder, setSessionContextFolder, getRecentSessionContextFolders } from "../session-context-folder-store";
 import { getSessionModelOverride, setSessionModelOverride } from "../session-model-override-store";
 import { materializeDataUrlToTemp, readMediaAsDataUrl, saveMedia, mediaFileExists } from "../media";
 import { openTerminalInDirectory } from "../terminal-launcher";
@@ -1343,6 +1343,23 @@ export function registerIpcHandlers(context: IpcContext): void {
       return true;
     },
   );
+
+  ipcMain.handle("list-recent-session-context-folders", (_event, limit?: number) => {
+    const lim = typeof limit === "number" && limit > 0 ? limit : 20;
+    const folders = getRecentSessionContextFolders(lim);
+    if (folders.length < lim) {
+      const cached = listCachedSessions(100);
+      const seen = new Set(folders);
+      for (const s of cached) {
+        if (s.contextFolder && !seen.has(s.contextFolder)) {
+          seen.add(s.contextFolder);
+          folders.push(s.contextFolder);
+          if (folders.length >= lim) break;
+        }
+      }
+    }
+    return folders;
+  });
 
   // Per-session model/provider selected from the in-chat picker. This is a
   // desktop-only routing binding and intentionally stores no API keys.

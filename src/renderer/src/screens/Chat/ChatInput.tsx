@@ -8,10 +8,17 @@ import {
   forwardRef,
   useImperativeHandle,
 } from "react";
-import { Square as Stop, Slash, Paperclip, Mic, ArrowUp } from "lucide-react";
+import { Square as Stop, Search, Paperclip, Mic, ArrowUp } from "lucide-react";
 import { isImeComposing } from "./keyboard";
 import { useI18n } from "../../components/useI18n";
 import { SLASH_COMMANDS, type SlashCommand } from "./slashCommands";
+import { SlashCommandIcon } from "./slash/SlashCommandIcon";
+import {
+  createSlashCommandVirtualLayout,
+  getSlashCommandScrollTop,
+  getVisibleSlashCommandRows,
+  SLASH_COMMAND_VIEWPORT_HEIGHT,
+} from "./slash/virtualSlashCommands";
 import { useInputHistory } from "./hooks/useInputHistory";
 import { useVoiceInput } from "./hooks/useVoiceInput";
 import {
@@ -55,6 +62,7 @@ interface ChatInputProps {
   /** Controls rendered inline in the bottom toolbar row (model + folder
    * pickers) so they share the composer's single bordered container. */
   toolbarExtras?: React.ReactNode;
+  slashCommands?: SlashCommand[];
   onSubmit: (text: string, attachments: Attachment[]) => void;
   onQuickAsk: (text: string, attachments: Attachment[]) => void;
   onAbort: () => void;
@@ -71,6 +79,7 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       contextUsage,
       readiness,
       toolbarExtras,
+      slashCommands = SLASH_COMMANDS,
       onSubmit,
       onQuickAsk,
       onAbort,
@@ -86,7 +95,12 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     const [attachmentError, setAttachmentError] = useState<string | null>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const slashMenuRef = useRef<HTMLDivElement>(null);
+    const slashMenuListRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const [slashMenuScrollTop, setSlashMenuScrollTop] = useState(0);
+    const [slashMenuViewportHeight, setSlashMenuViewportHeight] = useState(
+      SLASH_COMMAND_VIEWPORT_HEIGHT,
+    );
     // Tracks an active IME composition (Korean/Japanese/Chinese). Driven by the
     // composition events rather than the synthetic event's `isComposing` flag,
     // which macOS Chromium can report as false on the finalizing Enter.
@@ -232,40 +246,108 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       if (!isLoading) inputRef.current?.focus();
     }, [isLoading]);
 
-    // Close slash menu on click outside
     useEffect(() => {
-      if (!slashMenuOpen) return;
-      function handleClickOutside(e: MouseEvent): void {
-        if (
-          slashMenuRef.current &&
-          !slashMenuRef.current.contains(e.target as Node)
-        ) {
-          setSlashMenuOpen(false);
-        }
-      }
-      document.addEventListener("mousedown", handleClickOutside);
-      return () =>
-        document.removeEventListener("mousedown", handleClickOutside);
+      if (!slashMenuOpen || !slashMenuListRef.current) return;
+      const list = slashMenuListRef.current;
+      const updateViewportHeight = (): void => {
+        setSlashMenuViewportHeight(
+          list.clientHeight || SLASH_COMMAND_VIEWPORT_HEIGHT,
+        );
+      };
+      updateViewportHeight();
+      if (typeof ResizeObserver === "undefined") return;
+      const observer = new ResizeObserver(updateViewportHeight);
+      observer.observe(list);
+      return () => observer.disconnect();
     }, [slashMenuOpen]);
 
-    // Scroll active slash menu item into view
     useEffect(() => {
       if (!slashMenuOpen) return;
-      const active = slashMenuRef.current?.querySelector(
-        ".slash-menu-item-active",
-      );
-      active?.scrollIntoView({ block: "nearest" });
-    }, [slashSelectedIndex, slashMenuOpen]);
+      function handleGlobalEscape(event: KeyboardEvent): void {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        setSlashMenuOpen(false);
+        inputRef.current?.focus();
+      }
+      document.addEventListener("keydown", handleGlobalEscape, true);
+      return () =>
+        document.removeEventListener("keydown", handleGlobalEscape, true);
+    }, [slashMenuOpen]);
 
-    const filteredSlashCommands = useMemo(
+    const searchableSlashCommands = useMemo(
       () =>
-        slashMenuOpen
-          ? SLASH_COMMANDS.filter((cmd) =>
-              cmd.name.toLowerCase().startsWith(slashFilter.toLowerCase()),
-            )
-          : [],
-      [slashMenuOpen, slashFilter],
+        slashCommands.map((command) => ({
+          command,
+          normalizedName: command.name.toLowerCase(),
+          normalizedDescription: command.description.toLowerCase(),
+        })),
+      [slashCommands],
     );
+
+    const filteredSlashCommands = useMemo(() => {
+      if (!slashMenuOpen) return [];
+      const query = slashFilter.toLowerCase();
+      return searchableSlashCommands
+        .filter(({ normalizedName, normalizedDescription }) => {
+          return (
+            normalizedName.includes(query) ||
+            normalizedDescription.includes(query.slice(1))
+          );
+        })
+        .sort((a, b) => {
+          const aStarts = a.normalizedName.startsWith(query);
+          const bStarts = b.normalizedName.startsWith(query);
+          if (aStarts !== bStarts) return aStarts ? -1 : 1;
+          return a.normalizedName.localeCompare(b.normalizedName);
+        })
+        .map(({ command }) => command);
+    }, [searchableSlashCommands, slashMenuOpen, slashFilter]);
+
+    const slashVirtualLayout = useMemo(() => {
+      return createSlashCommandVirtualLayout(filteredSlashCommands);
+    }, [filteredSlashCommands]);
+
+    const visibleSlashRows = useMemo(() => {
+      return getVisibleSlashCommandRows(
+        slashVirtualLayout,
+        slashMenuScrollTop,
+        slashMenuViewportHeight,
+      );
+    }, [slashMenuScrollTop, slashMenuViewportHeight, slashVirtualLayout]);
+
+    useLayoutEffect(() => {
+      if (!slashMenuOpen) return;
+      const list = slashMenuListRef.current;
+      const commandTop =
+        slashVirtualLayout.commandTops[slashSelectedIndex] ?? 0;
+      const nextScrollTop = getSlashCommandScrollTop(
+        commandTop,
+        slashMenuScrollTop,
+        slashMenuViewportHeight,
+      );
+      if (nextScrollTop === slashMenuScrollTop) return;
+      if (list) list.scrollTop = nextScrollTop;
+      setSlashMenuScrollTop(nextScrollTop);
+    }, [
+      slashMenuOpen,
+      slashMenuScrollTop,
+      slashMenuViewportHeight,
+      slashSelectedIndex,
+      slashVirtualLayout,
+    ]);
+
+    function slashCategoryLabel(category: SlashCommand["category"]): string {
+      switch (category) {
+        case "chat":
+          return "Chat";
+        case "info":
+          return "Pages & settings";
+        case "tools":
+          return "Tools & skills";
+        case "agent":
+          return "Hermes Agent";
+      }
+    }
 
     function clearAfterSend(text: string): void {
       history.push(text);
@@ -295,15 +377,13 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
 
     function handleSlashSelect(cmd: SlashCommand): void {
       setSlashMenuOpen(false);
-      // Local / info commands dispatch immediately — let parent route through onSubmit
-      if (cmd.local || cmd.category === "info") {
+      if (!cmd.takesArgs) {
         setInput("");
         if (inputRef.current) inputRef.current.style.height = "auto";
         onSubmit(cmd.name, []);
         return;
       }
-      // Backend commands that take arguments: insert prefix and wait for the user
-      setInput(cmd.name + " ");
+      setInput(`${cmd.name} `);
       inputRef.current?.focus();
     }
 
@@ -315,10 +395,12 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       // Height is handled by the useLayoutEffect on `input` above.
 
       if (value.startsWith("/") && !value.includes(" ")) {
-        const query = value.split(" ")[0];
+        // No space yet, so the whole value is the command query.
         setSlashMenuOpen(true);
-        setSlashFilter(query);
+        setSlashFilter(value);
         setSlashSelectedIndex(0);
+        setSlashMenuScrollTop(0);
+        if (slashMenuListRef.current) slashMenuListRef.current.scrollTop = 0;
       } else if (slashMenuOpen) {
         setSlashMenuOpen(false);
       }
@@ -430,25 +512,99 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     return (
       <>
         {slashMenuOpen && filteredSlashCommands.length > 0 && (
-          <div className="slash-menu" ref={slashMenuRef}>
-            <div className="slash-menu-header">
-              <Slash size={12} />
-              {t("chat.commandsTitle")}
-            </div>
-            <div className="slash-menu-list">
-              {filteredSlashCommands.map((cmd, i) => (
-                <button
-                  key={cmd.name}
-                  className={`slash-menu-item ${i === slashSelectedIndex ? "slash-menu-item-active" : ""}`}
-                  onMouseEnter={() => setSlashSelectedIndex(i)}
-                  onClick={() => handleSlashSelect(cmd)}
+          <div
+            className="slash-menu-overlay"
+            onMouseDown={() => setSlashMenuOpen(false)}
+          >
+            <div
+              className="slash-menu"
+              ref={slashMenuRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label={t("chat.commandsTitle")}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <div className="slash-menu-search">
+                <Search size={16} aria-hidden />
+                <span className="slash-menu-search-query">
+                  {slashFilter || "/"}
+                </span>
+                <kbd>esc</kbd>
+              </div>
+              <div
+                className="slash-menu-list"
+                ref={slashMenuListRef}
+                role="listbox"
+                aria-label={t("chat.commandsTitle")}
+                onScroll={(event) =>
+                  setSlashMenuScrollTop(event.currentTarget.scrollTop)
+                }
+              >
+                <div
+                  className="slash-menu-virtual-content"
+                  style={{ height: slashVirtualLayout.totalHeight }}
                 >
-                  <span className="slash-menu-item-name">{cmd.name}</span>
-                  <span className="slash-menu-item-desc">
-                    {cmd.description}
-                  </span>
-                </button>
-              ))}
+                  {visibleSlashRows.map((row) =>
+                    row.kind === "group" ? (
+                      <div
+                        className="slash-menu-group-label"
+                        key={`group-${row.category}`}
+                        style={{
+                          height: row.height,
+                          transform: `translateY(${row.top}px)`,
+                        }}
+                      >
+                        {slashCategoryLabel(row.category)}
+                      </div>
+                    ) : (
+                      <button
+                        key={row.command.name}
+                        role="option"
+                        aria-selected={row.commandIndex === slashSelectedIndex}
+                        className={`slash-menu-item ${row.commandIndex === slashSelectedIndex ? "slash-menu-item-active" : ""}`}
+                        style={{
+                          height: row.height,
+                          transform: `translateY(${row.top}px)`,
+                        }}
+                        onMouseEnter={() =>
+                          setSlashSelectedIndex(row.commandIndex)
+                        }
+                        onClick={() => handleSlashSelect(row.command)}
+                      >
+                        <SlashCommandIcon
+                          name={row.command.name}
+                          category={row.command.category}
+                          className="slash-menu-item-icon"
+                          size={10}
+                        />
+                        <span className="slash-menu-item-name">
+                          {row.command.name?.replace(/^\//, "")}
+                        </span>
+                        <span className="slash-menu-item-desc">
+                          {row.command.description}
+                        </span>
+                        <span className="slash-menu-item-badge">
+                          {slashCategoryLabel(row.command.category)}
+                        </span>
+                      </button>
+                    ),
+                  )}
+                </div>
+              </div>
+              <div className="slash-menu-footer">
+                <span>
+                  <kbd>↑↓</kbd> navigate
+                </span>
+                <span>
+                  <kbd>↵</kbd> select
+                </span>
+                <span>
+                  <kbd>tab</kbd> complete
+                </span>
+                <span className="slash-menu-count">
+                  {filteredSlashCommands.length} commands
+                </span>
+              </div>
             </div>
           </div>
         )}

@@ -318,8 +318,8 @@ function Welcome({
 
   return (
     <div className="screen welcome-screen">
-      <HermesLogo size={40} />
-
+      <HermesLogo size={80} />
+      <br />
       {error ? (
         <>
           <h1 className="welcome-title">{t("welcome.installIssueTitle")}</h1>

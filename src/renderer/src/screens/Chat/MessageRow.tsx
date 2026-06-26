@@ -1,5 +1,6 @@
 import { memo, useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { formatDistanceToNowStrict } from "date-fns";
+import { Grid } from "react-loader-spinner";
 import { Copy, Check } from "lucide-react";
 import loadingGif from "../../assets/loadingo.gif";
 import { AgentMarkdown } from "../../components/AgentMarkdown";
@@ -309,7 +310,7 @@ export const MessageRow = memo(function MessageRow({
           msg.error ? " chat-bubble-error" : ""
         }`}
       >
-        {msg.content && !isLoading && (
+        {msg.content && !isLoading && !msg.isSlashLoader && (
           <div className="chat-bubble-actions">
             <button
               type="button"
@@ -329,7 +330,20 @@ export const MessageRow = memo(function MessageRow({
             ))}
           </div>
         )}
-        {msg.content &&
+        {msg.isSlashLoader ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Grid
+              visible={true}
+              height={13}
+              width={13}
+              radius={15}
+              color="#8b7cf6"
+              ariaLabel="running-command"
+            />
+            <span>{msg.content}</span>
+          </div>
+        ) : (
+          msg.content &&
           (msg.role === "agent" && segments
             ? segments.map((segment) =>
                 segment.type === "text" ? (
@@ -352,7 +366,8 @@ export const MessageRow = memo(function MessageRow({
                   />
                 ),
               )
-            : msg.content)}
+            : msg.content)
+        )}
         {msg.error && (
           <div className="chat-error-message" role="alert">
             {msg.error}

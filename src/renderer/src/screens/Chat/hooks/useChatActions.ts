@@ -2,6 +2,12 @@ import { useCallback, useEffect, useRef } from "react";
 import type { ChatInputHandle } from "../ChatInput";
 import { createTurn, shouldSendToAgent } from "../chatMessages";
 import type { SlashExecOutcome } from "../slashExec";
+import { handleSlashCommand } from "../slash/handleSlashCommand";
+import { parseSlashCommand } from "../slash/parseSlashCommand";
+import type {
+  PreparedModelSubmission,
+  SlashCommandCatalog,
+} from "../slash/types";
 import type { ActiveTurn, Attachment, ChatMessage } from "../types";
 import type { SessionModelOverride } from "../../../../../shared/model-override";
 
@@ -25,7 +31,6 @@ export function parseBackgroundCommand(text: string): string | null {
 }
 
 interface LocalCommands {
-  isLocal: (text: string) => boolean;
   executeLocal: (text: string) => Promise<boolean>;
 }
 
@@ -42,6 +47,10 @@ interface UseChatActionsArgs {
   onSessionStarted?: () => void;
   chatInputRef: React.RefObject<ChatInputHandle | null>;
   localCommands: LocalCommands;
+  slashCatalog: SlashCommandCatalog;
+  /** Open Desktop settings, optionally scrolling to a named section
+   *  (e.g. `/settings appearance`). */
+  onOpenSettings?: (section?: string) => void;
   activeTurnRef: React.MutableRefObject<ActiveTurn | null>;
   /** Working folder bound to this conversation (issue #27), or null. */
   contextFolder: string | null;
@@ -53,9 +62,8 @@ interface UseChatActionsArgs {
     text: string,
     attachments?: Attachment[],
   ) => Promise<boolean>;
-  /** Run a slash command through the gateway's slash pipeline (dashboard
-   *  transport only). Undefined on the legacy transport, where slash commands
-   *  fall back to being sent as plain text. */
+  /** Run an Agent-owned slash command through the gateway pipeline. Undefined
+   *  on legacy transport; the central router reports it as unavailable. */
   execSlashViaDashboard?: (
     command: string,
     sys: (text: string) => void,
@@ -69,7 +77,7 @@ interface UseChatActionsArgs {
   addAgentMessage?: (content: string) => void;
   /** Defer a message onto the busy queue. Used when a slash command resolves to
    *  an agent prompt while a turn is already in flight. */
-  enqueueMessage?: (text: string) => void;
+  enqueueMessage?: (text: string, attachments?: Attachment[]) => void;
   abortDashboard?: () => void;
 }
 
@@ -109,6 +117,8 @@ export function useChatActions({
   onSessionStarted,
   chatInputRef,
   localCommands,
+  slashCatalog,
+  onOpenSettings,
   activeTurnRef,
   contextFolder,
   sessionModel,
@@ -226,13 +236,6 @@ export function useChatActions({
       if (!hasPayload) return;
       if (!skipLoadingCheck && isLoadingRef.current) return;
 
-      if (text && localCommands.isLocal(text)) {
-        const cmd = text.split(/\s+/)[0].toLowerCase();
-        if (cmd !== "/new" && cmd !== "/clear") pushUser(text);
-        await localCommands.executeLocal(text);
-        return;
-      }
-
       const cmdName = text.startsWith("/")
         ? text.split(/\s+/)[0].toLowerCase()
         : "";
@@ -247,34 +250,35 @@ export function useChatActions({
         return;
       }
 
-      // Non-local slash command on the dashboard transport: route through the
-      // gateway's slash.exec / command.dispatch pipeline instead of submitting
-      // the literal text to the model (which would just echo it back as prose).
-      // `slash.exec` runs on the gateway's persistent slash-worker subprocess —
-      // concurrent with any in-flight turn — so commands like `/status` and
-      // `/compact` must run instantly and NOT touch the main turn's loading or
-      // active-turn state. Skipped on the legacy transport, for slash text with
-      // attachments, and for approval responses (`/approve`, `/deny`) which have
-      // dedicated prompt-level handling.
-      if (
-        execSlashViaDashboard &&
-        text.startsWith("/") &&
-        !RENDERER_NATIVE_SLASH.has(cmdName) &&
-        (attachments?.length ?? 0) === 0
-      ) {
+      if (text.startsWith("/") && !RENDERER_NATIVE_SLASH.has(cmdName)) {
+        const parsed = parseSlashCommand(text);
+        const definition = parsed.ok
+          ? slashCatalog.resolve(parsed.command.normalizedName)
+          : undefined;
+        // Pure UI desktop actions (open a page/picker, toggle a mode, reset
+        // the chat) leave no transcript output, so echoing a `/command` user
+        // bubble would just be a dangling artifact. Output-producing desktop
+        // commands (/help, /memory, …) still show it.
+        const shouldShowUser = !(
+          definition?.target === "desktop" && definition.uiAction === true
+        );
+        const turn = shouldShowUser ? pushUser(text) : createTurn("slash");
         const startIndex = messagesRef.current.length;
-        const turn = pushUser(text);
-
-        // These commands set no global loading state (they run concurrently on
-        // the slash worker), so without an in-place indicator there'd be no
-        // feedback at all while the gateway responds. Show a pending bubble and
-        // replace it with the result. Buffer pipeline output so the single
-        // bubble carries the final text rather than appending a second message.
-        const pendingId = `slash-${createTurn("slash").turnId}`;
-        setMessages((prev) => [
-          ...prev,
-          { id: pendingId, role: "agent", content: `⏳ Running ${text}…` },
-        ]);
+        // Reuse this turn's id for the pending loader bubble rather than
+        // minting a second throwaway turn — keeps the loader correlated to it.
+        const pendingId = `slash-${turn.turnId}`;
+        const showPending = definition?.target === "agent";
+        if (showPending) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: pendingId,
+              role: "agent",
+              isSlashLoader: true,
+              content: `Running ${text}…`,
+            },
+          ]);
+        }
         const replacePending = (content: string): void =>
           setMessages((prev) =>
             prev.map((m) =>
@@ -290,26 +294,70 @@ export function useChatActions({
         const collect = (chunk: string): void => {
           buffer = buffer ? `${buffer}\n${chunk}` : chunk;
         };
-        const outcome = await execSlashViaDashboard(text, collect);
 
-        if (outcome.kind === "error") {
-          replacePending(`error: ${outcome.message}`);
-        } else if (outcome.kind === "send") {
-          // The command resolved to an agent prompt, which needs the
-          // single-flight main session: run it now if idle, otherwise defer it
-          // onto the queue rather than colliding with the running turn.
-          removePending();
-          if (buffer) addAgentMessage?.(buffer);
-          if (isLoadingRef.current) {
-            enqueueMessage?.(outcome.message);
-          } else {
+        const result = await handleSlashCommand(text, slashCatalog, {
+          profile,
+          sessionId: hermesSessionId ?? undefined,
+          attachments: attachments ?? [],
+          isModelBusy: isLoadingRef.current,
+          executeAgentSlash:
+            execSlashViaDashboard ??
+            (async () => ({
+              kind: "error",
+              message:
+                "This command requires the Hermes Agent gateway. Switch chat transport to Auto or Dashboard and try again.",
+            })),
+          submitPrompt: async (submission: PreparedModelSubmission) => {
+            removePending();
             setIsLoading(true);
             activeTurnRef.current = { ...turn, startIndex, status: "running" };
             onSessionStarted?.();
-            await sendToAgent(outcome.message);
+            await sendToAgent(submission.content, submission.attachments);
+          },
+          enqueuePrompt: (submission) => {
+            removePending();
+            enqueueMessage?.(submission.content, submission.attachments);
+          },
+          addSystemMessage: collect,
+          executeDesktopSlash: localCommands.executeLocal,
+          renderSlashHelp: () => {
+            const grouped = new Map<string, typeof slashCatalog.commands>();
+            for (const command of slashCatalog.commands) {
+              const rows = grouped.get(command.category) ?? [];
+              rows.push(command);
+              grouped.set(command.category, rows);
+            }
+            const sections = Array.from(grouped.entries()).map(
+              ([category, commands]) =>
+                `**${category}**\n${commands
+                  .map(
+                    (command) =>
+                      `\`/${command.name}\` — ${command.description}`,
+                  )
+                  .join("\n")}`,
+            );
+            return `**Available commands**\n\n${sections.join("\n\n")}`;
+          },
+          openSettings: (section) => onOpenSettings?.(section),
+          openDialog: () => undefined,
+          startNewChat: () => onSessionStarted?.(),
+          clearTranscript: () => undefined,
+        });
+
+        if (result.type === "error") {
+          if (showPending) replacePending(`error: ${result.message}`);
+          else addAgentMessage?.(`error: ${result.message}`);
+        } else if (result.type === "handled") {
+          const out = buffer || result.output;
+          if (out) {
+            if (showPending) replacePending(out);
+            else addAgentMessage?.(out);
+          } else {
+            removePending();
           }
         } else {
-          replacePending(buffer || "(done)");
+          removePending();
+          if (buffer) addAgentMessage?.(buffer);
         }
         return;
       }
@@ -326,7 +374,11 @@ export function useChatActions({
     },
     [
       activeTurnRef,
+      hermesSessionId,
       localCommands,
+      profile,
+      slashCatalog,
+      onOpenSettings,
       execSlashViaDashboard,
       addAgentMessage,
       enqueueMessage,

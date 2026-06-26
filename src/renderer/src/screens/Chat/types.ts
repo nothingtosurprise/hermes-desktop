@@ -25,6 +25,8 @@ export interface ChatBubbleMessage {
   turnId?: string;
   /** Epoch-ms the message was recorded; surfaced as a hover timestamp. */
   timestamp?: number;
+  /** Renderer-only progress row while a slash command is executing. */
+  isSlashLoader?: boolean;
 }
 
 /**

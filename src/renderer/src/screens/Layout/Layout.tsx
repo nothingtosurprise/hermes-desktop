@@ -285,6 +285,16 @@ function Layout({
     setView(v);
   }, []);
 
+  useEffect(() => {
+    const handleNavigation = (e: Event): void => {
+      const targetView = (e as CustomEvent<View>).detail;
+      if (targetView) goTo(targetView);
+    };
+    window.addEventListener("navigation:goto", handleNavigation);
+    return () =>
+      window.removeEventListener("navigation:goto", handleNavigation);
+  }, [goTo]);
+
   const focusDiscover = useCallback(
     (kind: "skills" | "mcps") => {
       setDiscoverFocus((prev) => ({ kind, nonce: (prev?.nonce ?? 0) + 1 }));
@@ -763,7 +773,22 @@ function Layout({
                 active={run.runId === activeRunId}
                 profile={run.profile}
                 onNewChat={handleNewChat}
-                onOpenDiagnose={() => goTo("settings")}
+                onOpenDiagnose={(section?: string) => {
+                  goTo("settings");
+                  // Best-effort: scroll to a named section (e.g.
+                  // `/settings appearance`). The Settings view mounts on
+                  // goTo, so defer the lookup a frame; unknown names just
+                  // leave the page at the top.
+                  if (section) {
+                    const id = `settings-section-${section.trim().toLowerCase()}`;
+                    requestAnimationFrame(() =>
+                      document.getElementById(id)?.scrollIntoView({
+                        behavior: "smooth",
+                        block: "start",
+                      }),
+                    );
+                  }
+                }}
                 onLoadingChange={handleRunLoading}
                 onSessionIdChange={handleRunSessionId}
                 onTitleChange={handleRunTitle}

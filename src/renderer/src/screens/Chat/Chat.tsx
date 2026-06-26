@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { Zap, Globe } from "lucide-react";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
@@ -34,6 +34,19 @@ import type { ActiveTurn, ChatMessage, UsageState } from "./types";
 import type { ContextUsage } from "./ContextGauge";
 import { contextWindowForModel } from "./contextWindows";
 import { QueuedMessages } from "./QueuedMessages";
+import { SLASH_COMMANDS, type SlashCommand } from "./slashCommands";
+import {
+  agentCommandsFromCatalog,
+  createSlashCatalog,
+} from "./slash/commandCatalog";
+import {
+  DESKTOP_SLASH_COMMANDS,
+  LOCAL_DESKTOP_SLASH_COMMANDS,
+} from "./slash/desktopCommands";
+import type {
+  AgentCommandsCatalogResponse,
+  AgentSlashCommand,
+} from "./slash/types";
 
 interface QueuedMessage {
   text: string;
@@ -41,6 +54,35 @@ interface QueuedMessage {
 }
 
 export type { ChatMessage } from "./types";
+
+// A single shared AudioContext for the "agent finished" chime. Creating a new
+// context per turn leaks them — Chromium caps concurrent contexts (~6) and
+// never reclaims unclosed ones, after which construction throws and the chime
+// silently dies. One lazily-created, reused context avoids the leak entirely.
+let finishChimeCtx: AudioContext | null = null;
+function playFinishChime(): void {
+  try {
+    finishChimeCtx ??= new AudioContext();
+    const ctx = finishChimeCtx;
+    // Autoplay policy may park the context as "suspended"; the user has been
+    // interacting with the composer, so resuming is permitted.
+    if (ctx.state === "suspended") void ctx.resume();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    // Two quick ascending tones.
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(1100, ctx.currentTime + 0.08);
+    gain.gain.setValueAtTime(0.12, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.2);
+  } catch {
+    // AudioContext may be unavailable in some environments — ignore.
+  }
+}
 
 interface ChatProps {
   /** Stable id for this conversation/run. One <Chat> is mounted per run; all
@@ -55,9 +97,10 @@ interface ChatProps {
   profile?: string;
   onSessionStarted?: () => void;
   onNewChat?: () => void;
-  /** Optional callback to navigate to Settings → Diagnose section
-   *  when the user clicks "Show details" in the config-health banner. */
-  onOpenDiagnose?: () => void;
+  /** Optional callback to open Settings — from the config-health banner's
+   *  "Show details" (no section) or a `/settings <section>` command, which
+   *  passes the section name to scroll to. */
+  onOpenDiagnose?: (section?: string) => void;
   /** Reports the agent generating state so the sidebar / active-sessions bar
    *  can show a spinner on each running session. */
   onLoadingChange?: (runId: string, loading: boolean) => void;
@@ -96,24 +139,8 @@ function Chat({
     const wasLoading = prevLoadingRef.current;
     prevLoadingRef.current = isLoading;
     if (!wasLoading || isLoading) return;
-    // Agent just finished — play a short notification beep
-    try {
-      const ctx = new AudioContext();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = "sine";
-      // Play two quick ascending tones
-      osc.frequency.setValueAtTime(880, ctx.currentTime);
-      osc.frequency.setValueAtTime(1100, ctx.currentTime + 0.08);
-      gain.gain.setValueAtTime(0.12, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.2);
-    } catch {
-      // AudioContext may fail in some environments — silently ignore
-    }
+    // Agent just finished — play a short notification chime (shared context).
+    playFinishChime();
   }, [isLoading]);
   const [hermesSessionId, setHermesSessionId] = useState<string | null>(
     initialSessionId ?? null,
@@ -569,12 +596,123 @@ function Chat({
     onDashboardUnavailable: handleDashboardUnavailable,
   });
 
+  const [agentCommandCatalog, setAgentCommandCatalog] =
+    useState<AgentCommandsCatalogResponse | null>(null);
+  const getCommandCatalog = dashboardTransport.getCommandCatalog;
+  const commandCatalogEnabled = dashboardTransport.enabled;
+
+  useEffect(() => {
+    if (!commandCatalogEnabled) {
+      setAgentCommandCatalog(null);
+      return;
+    }
+    if (!active) return;
+    let cancelled = false;
+    void getCommandCatalog()
+      .then((catalog) => {
+        if (!cancelled) setAgentCommandCatalog(catalog);
+      })
+      .catch(() => {
+        if (!cancelled) setAgentCommandCatalog(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, commandCatalogEnabled, getCommandCatalog, profile]);
+
+  const slashCatalog = useMemo(() => {
+    const desktopCommands = [
+      ...DESKTOP_SLASH_COMMANDS,
+      ...LOCAL_DESKTOP_SLASH_COMMANDS,
+    ];
+    const desktopNames = new Set(
+      desktopCommands.map((command) => command.name),
+    );
+    const desktopAliases = new Set(
+      desktopCommands.flatMap((command) => command.aliases ?? []),
+    );
+    const discovered = agentCommandCatalog
+      ? agentCommandsFromCatalog(agentCommandCatalog)
+      : null;
+    const fallbackAgentCommands: AgentSlashCommand[] = SLASH_COMMANDS.filter(
+      (command) => !desktopNames.has(command.name.replace(/^\//, "")),
+    ).map((command) => ({
+      name: command.name,
+      description: command.description,
+      category: command.category,
+      source: "agent",
+      target: "agent",
+      allowWhileBusy: true,
+      supportsAttachments: false,
+    }));
+    const desktopTargetAliases: AgentSlashCommand[] = Object.entries(
+      discovered?.aliases ?? {},
+    )
+      .filter(
+        ([alias, target]) =>
+          !desktopNames.has(alias) &&
+          !desktopAliases.has(alias) &&
+          desktopNames.has(target),
+      )
+      .map(([alias]) => ({
+        name: alias,
+        description: `Hermes Agent command /${alias}`,
+        category: "Hermes Agent",
+        source: "agent",
+        target: "agent",
+        allowWhileBusy: true,
+      }));
+    const agentCommands = [
+      ...(discovered?.commands ?? fallbackAgentCommands).filter(
+        (command) => !desktopNames.has(command.name),
+      ),
+      ...desktopTargetAliases,
+    ];
+    const aliases = Object.fromEntries(
+      Object.entries(discovered?.aliases ?? {}).filter(
+        ([alias, target]) =>
+          !desktopNames.has(alias) &&
+          !desktopAliases.has(alias) &&
+          !desktopNames.has(target),
+      ),
+    );
+
+    return createSlashCatalog({
+      agentCommands,
+      desktopCommands,
+      aliases,
+    });
+  }, [agentCommandCatalog]);
+
+  const slashMenuCommands = useMemo<SlashCommand[]>(
+    () =>
+      slashCatalog.commands.map((command) => ({
+        name: `/${command.name}`,
+        description: command.description,
+        category:
+          command.target === "desktop"
+            ? "info"
+            : command.target === "model"
+              ? "tools"
+              : "agent",
+        local: command.target === "desktop",
+        takesArgs:
+          command.target === "agent" ||
+          command.target === "model" ||
+          Boolean(command.argsHint),
+      })),
+    [slashCatalog],
+  );
+
   // Defer a message onto the busy queue (used when a slash command resolves to
   // an agent prompt while a turn is already in flight).
-  const enqueueMessage = useCallback((text: string) => {
-    queueRef.current.push({ text, attachments: [] });
-    setQueuedMessages([...queueRef.current]);
-  }, []);
+  const enqueueMessage = useCallback(
+    (text: string, attachments: Attachment[] = []) => {
+      queueRef.current.push({ text, attachments });
+      setQueuedMessages([...queueRef.current]);
+    },
+    [],
+  );
 
   const actions = useChatActions({
     runId,
@@ -587,6 +725,8 @@ function Chat({
     onSessionStarted,
     chatInputRef,
     localCommands,
+    slashCatalog,
+    onOpenSettings: onOpenDiagnose,
     activeTurnRef,
     contextFolder,
     sessionModel: sessionModelOverride,
@@ -645,17 +785,11 @@ function Chat({
           void handleBackgroundRef.current(bgQuestion, attachments);
         return;
       }
-      // Other slash commands (`/status`, `/compact`, …) run on the gateway's
-      // slash worker or are renderer-local — all concurrent with any in-flight
-      // turn — so dispatch them immediately instead of queueing. handleSend's
-      // own routing decides what each one does (and defers the rare command
-      // that resolves to an agent prompt while busy). Limited to local commands
-      // and the dashboard transport (which has the worker); the legacy
-      // transport has no concurrent path, so its slash commands still queue.
-      if (
-        text.startsWith("/") &&
-        (localCommands.isLocal(text) || dashboardChatEnabled)
-      ) {
+      // The central slash router owns queueing policy. Dispatch every slash
+      // command immediately so Desktop commands can run, Agent commands can use
+      // the concurrent worker, and model-bound commands can format once before
+      // they are queued.
+      if (text.startsWith("/")) {
         void handleSendRef.current(text, attachments, true);
         return;
       }
@@ -666,7 +800,7 @@ function Chat({
       }
       void handleSendRef.current(text, attachments);
     },
-    [isLoading, localCommands, dashboardChatEnabled],
+    [isLoading],
   );
 
   const handleSuggestion = useCallback((text: string) => {
@@ -684,6 +818,37 @@ function Chat({
 
   const handleClearFolder = useCallback(() => {
     setContextFolder(null);
+  }, []);
+
+  // Stable toolbar callbacks so the memoized ModelPicker / ContextFolderChip
+  // don't re-render on every streaming chunk (each chunk re-renders <Chat>).
+  const handleSelectModel = useCallback(
+    (provider: string, model: string, baseUrl: string) => {
+      void modelConfig.selectModel(provider, model, baseUrl, {
+        persist: false,
+      });
+      // Carry the full identity (not just the model name) so a cross-provider
+      // switch reaches the right backend. Mirror the baseUrl rule selectModel
+      // applies so they can't drift.
+      setSessionModelOverride(
+        model
+          ? {
+              provider,
+              model,
+              baseUrl: effectiveOverrideBaseUrl(provider, baseUrl),
+            }
+          : undefined,
+      );
+    },
+    [modelConfig.selectModel],
+  );
+
+  const handleSelectRecentFolder = useCallback((path: string) => {
+    setContextFolder(path);
+  }, []);
+
+  const handleToggleWorktree = useCallback(() => {
+    setWorktreeVisible((v) => !v);
   }, []);
 
   // Drag-and-drop: filter for dragenter events carrying files (suppresses
@@ -888,35 +1053,21 @@ function Chat({
           profile={profile}
           contextUsage={contextUsage}
           readiness={readiness}
+          slashCommands={slashMenuCommands}
           onSubmit={handleSubmitOrQueue}
           onQuickAsk={actions.handleQuickAsk}
           onAbort={actions.handleAbort}
           toolbarExtras={
             <>
               <ModelPicker
+                active={active}
                 currentModel={chatCurrentModel}
                 currentProvider={chatCurrentProvider}
                 currentBaseUrl={chatCurrentBaseUrl}
                 modelGroups={modelConfig.modelGroups}
                 displayModel={chatDisplayModel}
                 onOpen={modelConfig.reload}
-                onSelectModel={(provider, model, baseUrl) => {
-                  void modelConfig.selectModel(provider, model, baseUrl, {
-                    persist: false,
-                  });
-                  // Carry the full identity (not just the model name) so a
-                  // cross-provider switch reaches the right backend. Mirror the
-                  // baseUrl rule selectModel applies so they can't drift.
-                  setSessionModelOverride(
-                    model
-                      ? {
-                          provider,
-                          model,
-                          baseUrl: effectiveOverrideBaseUrl(provider, baseUrl),
-                        }
-                      : undefined,
-                  );
-                }}
+                onSelectModel={handleSelectModel}
               />
               <ReasoningEffortPicker
                 value={reasoningEffort}
@@ -947,7 +1098,8 @@ function Chat({
                 worktreeVisible={worktreeVisible}
                 onPickFolder={handlePickFolder}
                 onClearFolder={handleClearFolder}
-                onToggleWorktree={() => setWorktreeVisible((v) => !v)}
+                onToggleWorktree={handleToggleWorktree}
+                onSelectRecentFolder={handleSelectRecentFolder}
               />
               <button
                 type="button"

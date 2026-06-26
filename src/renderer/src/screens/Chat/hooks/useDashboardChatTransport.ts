@@ -11,6 +11,7 @@ import {
 } from "../dashboardEventAdapter";
 import { DashboardGatewayClient } from "../dashboardGatewayClient";
 import { executeSlash, type SlashExecOutcome } from "../slashExec";
+import type { AgentCommandsCatalogResponse } from "../slash/types";
 import type { ActiveTurn, Attachment, ChatMessage, UsageState } from "../types";
 import type { DesktopSessionContinuationItem } from "../../../../../shared/session-continuation";
 
@@ -114,6 +115,7 @@ interface UseDashboardChatTransportResult {
     command: string,
     sys: (text: string) => void,
   ) => Promise<SlashExecOutcome>;
+  getCommandCatalog: () => Promise<AgentCommandsCatalogResponse>;
   /**
    * Launch a background (`/btw`, `/bg`, `/background`) prompt via the gateway's
    * `prompt.background` RPC. It runs a separate agent concurrently with the
@@ -1498,6 +1500,18 @@ export function useDashboardChatTransport({
     [enabled, ensureClient, ensureRuntimeSession, ensureSelectedModel],
   );
 
+  const getCommandCatalog =
+    useCallback(async (): Promise<AgentCommandsCatalogResponse> => {
+      if (!enabled) {
+        throw new Error("dashboard transport disabled");
+      }
+      const client = await ensureClient();
+      return client.request<AgentCommandsCatalogResponse>(
+        "commands.catalog",
+        {},
+      );
+    }, [enabled, ensureClient]);
+
   const runBackground = useCallback(
     async (text: string): Promise<{ taskId?: string; error?: string }> => {
       if (!enabled) return { error: "dashboard transport disabled" };
@@ -1538,5 +1552,12 @@ export function useDashboardChatTransport({
     [],
   );
 
-  return { abort, enabled, sendMessage, execSlash, runBackground };
+  return {
+    abort,
+    enabled,
+    sendMessage,
+    execSlash,
+    getCommandCatalog,
+    runBackground,
+  };
 }

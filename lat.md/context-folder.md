@@ -14,6 +14,12 @@ The chat loads the stored folder when resuming a session and saves it whenever i
 
 In [[src/renderer/src/screens/Chat/Chat.tsx#Chat]] a load effect fetches the folder for `initialSessionId` on mount; a save effect writes `contextFolder` via `setSessionContextFolder` on every change. The save is gated on a "loaded" ref so the initial null can't overwrite a resumed session's stored folder before the load resolves. A brand-new chat saves once its session id resolves after the first message, binding the pre-selected folder to the new session.
 
+## Recent folders dropdown
+
+The context folder picker displays recently used project folders first, allowing quick selection across sessions without opening the OS folder dialog.
+
+[[src/renderer/src/screens/Chat/ContextFolderChip.tsx#ContextFolderChip]] presents a dropdown menu populated by [[src/main/session-context-folder-store.ts#getRecentSessionContextFolders]] via the `list-recent-session-context-folders` IPC channel, combining distinct database folder bindings with cached session paths.
+
 ## Resizable tree panel
 
 The context-folder tree panel uses a compact header and can be resized from its left edge, mirroring the in-app browser panel.

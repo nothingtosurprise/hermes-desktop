@@ -4,6 +4,7 @@ import { useI18n } from "../../components/useI18n";
 import type { ModelGroup } from "./types";
 
 interface ModelPickerProps {
+  active?: boolean;
   currentModel: string;
   currentProvider: string;
   currentBaseUrl: string;
@@ -14,6 +15,7 @@ interface ModelPickerProps {
 }
 
 export const ModelPicker = memo(function ModelPicker({
+  active = true,
   currentModel,
   currentProvider,
   currentBaseUrl,
@@ -37,9 +39,36 @@ export const ModelPicker = memo(function ModelPicker({
         setIsOpen(false);
       }
     }
+    function handleKeyDown(e: KeyboardEvent): void {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setIsOpen(false);
+      }
+    }
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown, true);
+    };
   }, [isOpen]);
+
+  const onOpenRef = useRef(onOpen);
+  useEffect(() => {
+    onOpenRef.current = onOpen;
+  });
+
+  useEffect(() => {
+    if (!active) return;
+    function handleExternalOpen(): void {
+      onOpenRef.current();
+      setIsOpen(true);
+      setSearchInput("");
+    }
+    window.addEventListener("model-picker:open", handleExternalOpen);
+    return () =>
+      window.removeEventListener("model-picker:open", handleExternalOpen);
+  }, [active]);
 
   const searchQuery = searchInput.trim().toLowerCase();
   const filteredGroups = searchQuery
@@ -86,13 +115,27 @@ export const ModelPicker = memo(function ModelPicker({
       </button>
 
       {isOpen && (
-        <div className="chat-model-dropdown">
+        <div
+          className="chat-model-dropdown"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              setIsOpen(false);
+            }
+          }}
+        >
           <input
             ref={searchRef}
             className="chat-model-search-input"
             type="text"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                setIsOpen(false);
+              }
+            }}
             placeholder={t("chat.searchModels")}
           />
           {filteredGroups.map((group) => (
@@ -127,6 +170,10 @@ export const ModelPicker = memo(function ModelPicker({
                 onChange={(e) => setCustomInput(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") submitCustom();
+                  if (e.key === "Escape") {
+                    e.stopPropagation();
+                    setIsOpen(false);
+                  }
                 }}
                 placeholder={t("chat.typeModelName")}
               />
