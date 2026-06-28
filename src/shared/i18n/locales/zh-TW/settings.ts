@@ -6,6 +6,21 @@ export default {
     privacy: "隱私",
     credentialPool: "憑證池",
   },
+  nav: {
+    groups: {
+      general: "一般",
+      hermes: "Hermes One",
+    },
+    appearance: "外觀",
+    language: "語言",
+    privacy: "隱私",
+    connection: "連線",
+    network: "網路",
+    data: "資料",
+    about: "關於與更新",
+    community: "社群",
+    logs: "記錄與診斷",
+  },
   analytics: {
     label: "傳送匿名使用情況分析",
     hint: "透過向專案的分析服務傳送匿名、彙總的使用資料，協助改進 Hermes。您隨時可以關閉此功能。",

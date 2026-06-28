@@ -5,6 +5,8 @@ export default {
   projects: "プロジェクト",
   chats: "チャット",
   noChats: "チャットなし",
+  discover: "見つける",
+  pinned: "ピン留め",
   agents: "プロファイル",
   office: "オフィス",
   models: "モデル",

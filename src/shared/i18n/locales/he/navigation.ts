@@ -5,6 +5,7 @@ export default {
   projects: "פרויקטים",
   chats: "צ'אטים",
   noChats: "אין צ'אטים",
+  pinned: "מוצמדים",
   discover: "גילוי",
   agents: "פרופילים",
   office: "אופיס",

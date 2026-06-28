@@ -5,6 +5,7 @@ export default {
   projects: "Projeler",
   chats: "Sohbetler",
   noChats: "Sohbet yok",
+  pinned: "Sabitlenenler",
   discover: "Keşfet",
   agents: "Profiller",
   office: "Ofis",

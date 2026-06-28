@@ -6,6 +6,21 @@ export default {
     privacy: "Gizlilik",
     credentialPool: "Kimlik Bilgisi Havuzu",
   },
+  nav: {
+    groups: {
+      general: "Genel",
+      hermes: "Hermes One",
+    },
+    appearance: "Görünüm",
+    language: "Dil",
+    privacy: "Gizlilik",
+    connection: "Bağlantı",
+    network: "Ağ",
+    data: "Veri",
+    about: "Hakkında ve Güncellemeler",
+    community: "Topluluk",
+    logs: "Günlükler ve Tanılama",
+  },
   theme: {
     label: "Tema",
     system: "Sistem",

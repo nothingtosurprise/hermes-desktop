@@ -5,6 +5,8 @@ export default {
   projects: "Projetos",
   chats: "Chats",
   noChats: "Sem chats",
+  discover: "Descobrir",
+  pinned: "Fixados",
   agents: "Perfis",
   office: "Escritório",
   models: "Modelos",

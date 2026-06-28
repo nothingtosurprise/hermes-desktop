@@ -6,6 +6,21 @@ export default {
     privacy: "פרטיות",
     credentialPool: "מאגר אישורים",
   },
+  nav: {
+    groups: {
+      general: "כללי",
+      hermes: "Hermes One",
+    },
+    appearance: "מראה",
+    language: "שפה",
+    privacy: "פרטיות",
+    connection: "חיבור",
+    network: "רשת",
+    data: "נתונים",
+    about: "אודות ועדכונים",
+    community: "קהילה",
+    logs: "יומנים ואבחון",
+  },
   theme: {
     label: "ערכת נושא",
     system: "מערכת",

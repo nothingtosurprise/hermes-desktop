@@ -6,6 +6,21 @@ export default {
     privacy: "プライバシー",
     credentialPool: "認証情報プール",
   },
+  nav: {
+    groups: {
+      general: "一般",
+      hermes: "Hermes One",
+    },
+    appearance: "外観",
+    language: "言語",
+    privacy: "プライバシー",
+    connection: "接続",
+    network: "ネットワーク",
+    data: "データ",
+    about: "情報とアップデート",
+    community: "コミュニティ",
+    logs: "ログと診断",
+  },
   analytics: {
     label: "匿名の利用状況分析を送信する",
     hint: "プロジェクトの分析サービスに匿名・集計済みの利用状況データを送信することで Hermes の改善に役立てます。いつでもオフにできます。",

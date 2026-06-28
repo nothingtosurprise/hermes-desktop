@@ -6,6 +6,21 @@ export default {
     privacy: "Prywatność",
     credentialPool: "Pula poświadczeń",
   },
+  nav: {
+    groups: {
+      general: "Ogólne",
+      hermes: "Hermes One",
+    },
+    appearance: "Wygląd",
+    language: "Język",
+    privacy: "Prywatność",
+    connection: "Połączenie",
+    network: "Sieć",
+    data: "Dane",
+    about: "Informacje i aktualizacje",
+    community: "Społeczność",
+    logs: "Dzienniki i diagnostyka",
+  },
   theme: {
     label: "Motyw",
     system: "Systemowy",

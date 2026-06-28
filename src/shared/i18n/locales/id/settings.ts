@@ -6,6 +6,21 @@ export default {
     privacy: "Privasi",
     credentialPool: "Kumpulan Kredensial",
   },
+  nav: {
+    groups: {
+      general: "Umum",
+      hermes: "Hermes One",
+    },
+    appearance: "Tampilan",
+    language: "Bahasa",
+    privacy: "Privasi",
+    connection: "Koneksi",
+    network: "Jaringan",
+    data: "Data",
+    about: "Tentang & Pembaruan",
+    community: "Komunitas",
+    logs: "Log & Diagnostik",
+  },
   analytics: {
     label: "Kirim analitik penggunaan anonim",
     hint: "Membantu meningkatkan Hermes dengan mengirim data penggunaan anonim dan teragregasi ke layanan analitik proyek. Anda dapat menonaktifkannya kapan saja.",

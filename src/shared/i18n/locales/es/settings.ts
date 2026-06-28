@@ -6,6 +6,21 @@ export default {
     privacy: "Privacidad",
     credentialPool: "Grupo de credenciales",
   },
+  nav: {
+    groups: {
+      general: "General",
+      hermes: "Hermes One",
+    },
+    appearance: "Apariencia",
+    language: "Idioma",
+    privacy: "Privacidad",
+    connection: "Conexión",
+    network: "Red",
+    data: "Datos",
+    about: "Acerca de y actualizaciones",
+    community: "Comunidad",
+    logs: "Registros y diagnósticos",
+  },
   analytics: {
     label: "Enviar analíticas de uso anónimas",
     hint: "Ayuda a mejorar Hermes enviando datos de uso anónimos y agregados al servicio de analítica del proyecto. Puedes desactivarlo en cualquier momento.",
